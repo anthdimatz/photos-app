@@ -1,0 +1,7 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: same-origin
+  X-Robots-Tag: noindex, nofollow
+
+/*.js
+  Cache-Control: public, max-age=0, must-revalidate

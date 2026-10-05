@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Photos">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Photos</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <!-- Sign in -->
+  <div id="login" class="login" hidden>
+    <form id="loginForm" class="login-card">
+      <img src="/apple-touch-icon.png" alt="" width="72" height="72" class="login-icon">
+      <h1>Photos</h1>
+      <label for="password" class="sr-only">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Password" required>
+      <button type="submit" class="btn-primary">Unlock</button>
+      <p id="loginError" class="login-error" role="alert"></p>
+    </form>
+  </div>
+
+  <!-- Main app -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="topbar-text">
+        <h1 id="viewTitle">Library</h1>
+        <p id="viewSub" class="sub"></p>
+      </div>
+      <div class="topbar-actions">
+        <button id="slideshowBtn" class="pill" aria-label="Play slideshow">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg><span>Slideshow</span>
+        </button>
+        <button id="surpriseBtn" class="pill pill-keep" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l1.9 5.6 5.6 1.9-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.9zM18.5 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg><span>New memory</span>
+        </button>
+        <button id="selectBtn" class="pill">Select</button>
+        <button id="uploadBtn" class="pill pill-icon" aria-label="Add photos" aria-haspopup="menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+        </button>
+        <div id="addMenu" class="add-menu" role="menu" hidden>
+          <button data-pick="folder" role="menuitem"><strong>Choose a folder</strong><span>Adds every photo inside, including subfolders. Videos are skipped.</span></button>
+          <button data-pick="files" role="menuitem"><strong>Choose photos</strong><span>Pick individual photos.</span></button>
+          <p class="add-tip">You can also drag photos or whole folders onto this page.</p>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section id="view-library" class="view"></section>
+      <section id="view-memories" class="view" hidden></section>
+      <section id="view-favorites" class="view" hidden></section>
+    </main>
+
+    <div id="selbar" class="selbar" hidden>
+      <span id="selCount" class="sel-count">Select photos</span>
+      <div class="selbar-actions">
+        <button data-act="slideshow">Slideshow</button>
+        <button data-act="movie">Make movie</button>
+        <button data-act="favorite">Favorite</button>
+        <button data-act="delete" class="danger">Delete</button>
+      </div>
+    </div>
+
+    <nav class="tabbar" aria-label="Sections">
+      <button data-view="library" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z"/></svg>
+        <span>Library</span>
+      </button>
+      <button data-view="memories">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5zm6 3.2v6.6l5.5-3.3z"/></svg>
+        <span>Memories</span>
+      </button>
+      <button data-view="favorites">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-8-4.9-8-11A4.5 4.5 0 0 1 12 6.8a4.5 4.5 0 0 1 8 2.7c0 6.1-8 11-8 11z"/></svg>
+        <span>Favorites</span>
+      </button>
+    </nav>
+
+    <input id="fileInput" type="file" accept="image/*,.heic,.heif" multiple hidden>
+    <input id="folderInput" type="file" webkitdirectory multiple hidden>
+    <div id="dropHint" class="drop-hint" hidden>Drop photos to add them</div>
+  </div>
+
+  <!-- Single photo viewer -->
+  <div id="viewer" class="viewer" hidden>
+    <div id="vStage" class="v-stage"><img id="vImg" alt=""></div>
+    <div class="v-top">
+      <button id="vClose" class="v-btn">Done</button>
+      <div class="v-date"><strong id="vDate"></strong><span id="vTime"></span></div>
+      <span id="vCount" class="v-count"></span>
+    </div>
+    <div class="v-bottom">
+      <button id="vFav" class="v-icon" aria-label="Favorite" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-8-4.9-8-11A4.5 4.5 0 0 1 12 6.8a4.5 4.5 0 0 1 8 2.7c0 6.1-8 11-8 11z"/></svg>
+      </button>
+      <button id="vPlay" class="v-icon" aria-label="Play slideshow from here">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>
+      </button>
+      <button id="vDelete" class="v-icon" aria-label="Delete photo">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4zm-3 6h12l-1 12H7z"/></svg>
+      </button>
+    </div>
+    <button id="vPrev" class="v-nav v-prev" aria-label="Previous photo">‹</button>
+    <button id="vNext" class="v-nav v-next" aria-label="Next photo">›</button>
+  </div>
+
+  <!-- Slideshow / memory player -->
+  <div id="player" class="player show-ui" hidden>
+    <div id="pStage" class="p-stage"><canvas id="pCanvas"></canvas></div>
+    <div class="p-ui">
+      <div class="p-top">
+        <button id="pClose" class="v-btn">Close</button>
+        <span id="pTitle" class="p-title"></span>
+        <div class="p-top-right">
+          <button id="pOptions" class="v-btn">Options</button>
+          <button id="pSave" class="v-btn v-btn-strong">Save video</button>
+        </div>
+      </div>
+      <button id="pPlay" class="p-play" aria-label="Play or pause">
+        <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zm6.5 0H17v14h-3.5z"/></svg>
+        <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>
+      </button>
+      <div id="pProgress" class="p-progress"><div id="pBar" class="p-bar"></div></div>
+    </div>
+    <div class="p-spinner" aria-hidden="true"></div>
+
+    <div id="pSheet" class="sheet" hidden>
+      <div class="sheet-group">
+        <h3>Music</h3>
+        <div class="seg">
+          <button data-opt="music" data-val="none">None</button>
+          <button data-opt="music" data-val="gentle">Gentle</button>
+          <button data-opt="music" data-val="bright">Bright</button>
+          <button data-opt="music" data-val="file">Your song…</button>
+        </div>
+      </div>
+      <div class="sheet-group">
+        <h3>Shape</h3>
+        <div class="seg">
+          <button data-opt="shape" data-val="wide">Wide (TV, computer)</button>
+          <button data-opt="shape" data-val="tall">Tall (phone)</button>
+        </div>
+      </div>
+      <div class="sheet-group">
+        <h3>Pace</h3>
+        <div class="seg">
+          <button data-opt="pace" data-val="relaxed">Relaxed</button>
+          <button data-opt="pace" data-val="normal">Normal</button>
+          <button data-opt="pace" data-val="quick">Quick</button>
+        </div>
+      </div>
+      <button id="pShuffle" class="sheet-link">Pick different photos</button>
+      <button id="pSheetDone" class="btn-primary">Done</button>
+      <input id="pMusicFile" type="file" accept="audio/*" hidden>
+    </div>
+
+    <div id="pRec" class="modal" hidden>
+      <div class="modal-card">
+        <p id="pRecText" class="modal-text"></p>
+        <div class="meter"><div id="pRecBar"></div></div>
+        <button id="pRecCancel" class="sheet-link">Cancel</button>
+      </div>
+    </div>
+    <div id="pDone" class="modal" hidden>
+      <div class="modal-card">
+        <h2>Your video is ready</h2>
+        <p id="pDoneText" class="modal-text"></p>
+        <button id="pDoneSave" class="btn-primary">Save video</button>
+        <button id="pDoneClose" class="sheet-link">Not now</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload progress -->
+  <div id="uploadModal" class="modal" hidden>
+    <div class="modal-card">
+      <h2 id="upTitle">Adding photos</h2>
+      <p id="upText" class="modal-text"></p>
+      <div class="meter"><div id="upBar"></div></div>
+      <p id="upEta" class="modal-eta"></p>
+      <p id="upSkip" class="modal-note"></p>
+      <p id="upNote" class="modal-note"></p>
+      <button id="upCancel" class="sheet-link">Stop</button>
+      <button id="upDone" class="btn-primary" hidden>Done</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
