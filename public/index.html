@@ -21,6 +21,13 @@
   <script type="module" src="/app.js"></script>
 </head>
 <body>
+  <!-- Shown while the app starts -->
+  <div id="loading" class="loading" role="status">
+    <img src="/apple-touch-icon.png" alt="" width="64" height="64">
+    <div class="loading-spin" aria-hidden="true"></div>
+    <p id="loadingText">Opening your library…</p>
+  </div>
+
   <!-- Sign in -->
   <div id="login" class="login" hidden>
     <form id="loginForm" class="login-card">
@@ -71,10 +78,16 @@
           <p class="add-tip">You can also drag photos or whole folders onto this page.</p>
         </div>
       </div>
-      <div id="libModes" class="seg-bar" role="tablist" aria-label="Library view" hidden>
-        <button data-mode="years" role="tab">Years</button>
-        <button data-mode="months" role="tab">Months</button>
-        <button data-mode="all" role="tab">All Photos</button>
+      <div id="libRow" class="lib-row" hidden>
+        <div id="libModes" class="seg-bar" role="tablist" aria-label="Library view">
+          <button data-mode="years" role="tab">Years</button>
+          <button data-mode="months" role="tab">Months</button>
+          <button data-mode="all" role="tab">All Photos</button>
+        </div>
+        <div id="sizeBtns" class="size-btns">
+          <button id="smallerBtn" aria-label="Smaller photos" title="Smaller photos">−</button>
+          <button id="largerBtn" aria-label="Larger photos" title="Larger photos">+</button>
+        </div>
       </div>
     </header>
 

@@ -52,8 +52,8 @@ const cookieHeader = (value, maxAge) => `${COOKIE}=${value}; Path=/; HttpOnly; S
 // ---------- storage ----------
 // The file list is read one page (up to 1,000 files) per request. Reading
 // everything at once is too much work for a single request on the free plan.
-async function listPage(env, prefix, cursor) {
-  const page = await env.BUCKET.list({ prefix, cursor: cursor || undefined, limit: 1000 });
+async function listPage(env, prefix, cursor, part = "") {
+  const page = await env.BUCKET.list({ prefix: prefix + part, cursor: cursor || undefined, limit: 1000 });
   const names = [];
   let bytes = 0;
   for (const o of page.objects) {
@@ -90,6 +90,14 @@ async function reserveUsage(env, incoming, limit) {
     await new Promise((r) => setTimeout(r, 30 + Math.random() * 120));
   }
   return { ok: false, code: "busy" };
+}
+
+// meta/changed.json records when photos were last added or removed, so the app
+// can skip re-reading the file list when nothing has changed.
+const markChanged = (env) => writeJson(env, "meta/changed.json", { at: Date.now() });
+async function readChanged(env) {
+  const data = await readJson(env, "meta/changed.json", null);
+  return Number(data?.at) || 0;
 }
 
 const ID_RE = /^[0-9a-f]{16}$/;
@@ -147,7 +155,11 @@ async function deleteForGood(env, names) {
   for (const n of Object.keys(trash)) if (gone.has(n)) (delete trash[n], (trashChanged = true));
   const albumsChanged = albums.some((a) => a.photos.some((id) => goneIds.has(id)));
   for (const a of albums) a.photos = a.photos.filter((id) => !goneIds.has(id));
-  await Promise.all([trashChanged && writeJson(env, "meta/trash.json", trash), albumsChanged && writeJson(env, "meta/albums.json", albums)]);
+  await Promise.all([
+    trashChanged && writeJson(env, "meta/trash.json", trash),
+    albumsChanged && writeJson(env, "meta/albums.json", albums),
+    markChanged(env),
+  ]);
 }
 
 async function readBody(request) {
@@ -178,31 +190,42 @@ async function api(request, env, url) {
 
   if (!(await validSession(request, env))) return json({ error: "Sign in to continue." }, 401);
 
-  // One page of the library. The first page also carries favorites, albums and
-  // Recently Deleted. prefix=thumb pages only report their size, for storage used.
-  if (route === "photos" && method === "GET") {
-    const prefix = url.searchParams.get("prefix") === "thumb" ? "thumb/" : "full/";
-    const cursor = url.searchParams.get("cursor");
-    if (prefix === "thumb/" || cursor) {
-      const page = await listPage(env, prefix, cursor);
-      return json({ photos: prefix === "full/" ? page.names : [], bytes: page.bytes, cursor: page.cursor });
-    }
-    // First page: clear out photos that have been in Recently Deleted over 30 days
-    // (a few hundred at a time, so this request stays small).
+  // Everything except the file list: favorites, albums, Recently Deleted, storage
+  // used, and when photos last changed. Small and quick, so the app asks every time.
+  if (route === "library" && method === "GET") {
     let trash = await readTrash(env);
+    // Photos in Recently Deleted for over 30 days are removed for good,
+    // a few hundred at a time so this request stays small.
     const expired = Object.keys(trash).filter((n) => Date.now() - trash[n] > TRASH_DAYS * DAY).slice(0, 200);
     if (expired.length) {
       await deleteForGood(env, expired);
       trash = await readTrash(env);
     }
-    const [page, favorites, albums, meta] = await Promise.all([
-      listPage(env, prefix, null),
-      readFavorites(env),
-      readAlbums(env),
-      env.BUCKET.list({ prefix: "meta/", limit: 100 }),
-    ]);
-    const metaBytes = meta.objects.reduce((s, o) => s + o.size, 0);
-    return json({ photos: page.names, cursor: page.cursor, bytes: page.bytes + metaBytes, favorites, trash, albums, trashDays: TRASH_DAYS, limitBytes: limitBytes(env) });
+    let [favorites, albums, usage, changed] = await Promise.all([readFavorites(env), readAlbums(env), readUsage(env), readChanged(env)]);
+    if (!changed) {
+      // Libraries uploaded before this marker existed: start it now.
+      changed = Date.now();
+      await writeJson(env, "meta/changed.json", { at: changed });
+    }
+    return json({
+      favorites,
+      trash,
+      albums,
+      changed,
+      usedBytes: usage ? usage.bytes : null,
+      trashDays: TRASH_DAYS,
+      limitBytes: limitBytes(env),
+    });
+  }
+
+  // One page of the file list. The app splits the list into many small parts by
+  // date (the start of each file name) and reads them side by side.
+  if (route === "photos" && method === "GET") {
+    const part = url.searchParams.get("part") || "";
+    if (!/^\d{0,3}$/.test(part)) return json({ error: "Invalid part." }, 400);
+    const kind = url.searchParams.get("kind") === "thumb" ? "thumb" : "full";
+    const page = await listPage(env, `${kind}/`, url.searchParams.get("cursor"), part);
+    return json({ photos: kind === "full" ? page.names : [], bytes: page.bytes, cursor: page.cursor });
   }
 
   // The app reports the total it just measured while loading every page.
@@ -258,6 +281,7 @@ async function api(request, env, url) {
       }
     }
     const r = await reserveUsage(env, incoming, limit);
+    if (r.ok) await markChanged(env);
     if (r.code === "storage_full") {
       return json(
         {
@@ -323,6 +347,8 @@ async function image(request, env, url) {
     const body = await request.arrayBuffer();
     if (!body.byteLength || body.byteLength > MAX_FILE) return json({ error: "That file is too large." }, 413);
     await env.BUCKET.put(key, body, { httpMetadata: { contentType: "image/jpeg" } });
+    // The full-size copy is uploaded last, so the photo is complete now.
+    if (m[1] === "full") await markChanged(env);
     return json({ ok: true });
   }
 

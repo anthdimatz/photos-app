@@ -17,6 +17,7 @@ const S = {
   trash: {}, // photo name -> time it was deleted
   trashDays: 30,
   albums: [],
+  sessionIds: new Set(), // photos uploaded from this device since the app opened
   favs: new Set(),
   view: "library",
   libMode: ["years", "months", "all"].includes(localStorage.getItem("libMode")) ? localStorage.getItem("libMode") : "all",
@@ -26,7 +27,10 @@ const S = {
   loadedAt: 0,
   memories: null,
   memIndex: new Map(),
-  cols: Number(localStorage.getItem("cols")) || (innerWidth < 500 ? 3 : innerWidth < 900 ? 5 : 7),
+  cols: (() => {
+    const saved = Number(localStorage.getItem("cols"));
+    return saved >= 2 && saved <= 12 ? saved : innerWidth < 500 ? 3 : innerWidth < 900 ? 5 : 7;
+  })(),
   error: null,
 };
 
@@ -80,6 +84,7 @@ const player = new Player({ toast });
 
 // ---------- sign in ----------
 function showLogin() {
+  hideLoading();
   $("app").hidden = true;
   $("login").hidden = false;
   setTimeout(() => $("password").focus(), 50);
@@ -99,6 +104,8 @@ $("loginForm").addEventListener("submit", async (e) => {
     if (!res.ok) throw new Error(data.error || "Couldn't sign in.");
     $("password").value = "";
     $("login").hidden = true;
+    $("loading").hidden = false;
+    setLoading("Opening your library…");
     await boot();
   } catch (err) {
     $("loginError").textContent = err.message;
@@ -114,7 +121,24 @@ function sortLists() {
   S.trashed = all.filter((p) => S.trash[p.name]).sort((a, b) => S.trash[b.name] - S.trash[a.name]);
   S.memories = null;
 }
-const CACHE_KEY = "library-cache-v1";
+const CACHE_KEY = "library-cache-v2";
+// The file list is split by date (the start of each file name) into small parts
+// that load side by side. Together these parts cover every possible name.
+const PARTS = ["0", ...Array.from({ length: 100 }, (_, i) => String(100 + i)), "2", "3", "4", "5", "6", "7", "8", "9"];
+
+function setLoading(text) {
+  if (text) $("loadingText").textContent = text;
+}
+function hideLoading() {
+  $("loading").hidden = true;
+}
+function readCache() {
+  try {
+    return JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
 function applyLibrary(d) {
   const all = d.photos
     .map((name) => {
@@ -131,59 +155,100 @@ function applyLibrary(d) {
   S.favs = new Set((favDirty ? [...S.favs] : d.favorites || []).filter((id) => S.byId.has(id)));
   if (!albumsDirty) S.albums = d.albums || [];
   if (S.view === "album" && !currentAlbum()) S.view = "albums";
-  S.bytes = d.bytes || 0;
+  if (d.bytes != null) S.bytes = d.bytes;
   S.limit = d.limitBytes || 9.5e9;
 }
-// Reads the library one page at a time (photos and thumbnails side by side),
-// keeps a copy on this device for instant opening, and reports storage used.
-async function load() {
-  const first = await api("photos");
-  const names = [...first.photos];
-  let bytes = first.bytes;
-  const fullPages = (async () => {
-    for (let c = first.cursor; c; ) {
-      const p = await api(`photos?cursor=${encodeURIComponent(c)}`);
-      names.push(...p.photos);
-      bytes += p.bytes;
-      c = p.cursor;
+
+async function listAll(kind, onProgress) {
+  const names = [];
+  let bytes = 0, next = 0;
+  const worker = async () => {
+    while (next < PARTS.length) {
+      const part = PARTS[next++];
+      let cursor = "";
+      do {
+        const p = await api(`photos?kind=${kind}&part=${part}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+        names.push(...p.photos);
+        bytes += p.bytes;
+        cursor = p.cursor;
+        onProgress?.(names.length);
+      } while (cursor);
     }
-  })();
-  const thumbPages = (async () => {
-    let c = "";
-    do {
-      const p = await api(`photos?prefix=thumb${c ? `&cursor=${encodeURIComponent(c)}` : ""}`);
-      bytes += p.bytes;
-      c = p.cursor;
-    } while (c);
-  })();
-  await Promise.all([fullPages, thumbPages]);
-  const d = { photos: names, favorites: first.favorites, trash: first.trash, albums: first.albums, trashDays: first.trashDays, limitBytes: first.limitBytes, bytes };
+  };
+  await Promise.all(Array.from({ length: 12 }, worker));
+  return { names, bytes };
+}
+
+// Re-measures storage in the background after the file list changed.
+function measureStorage(fullBytes) {
+  S.measuring = (async () => {
+    const [full, thumbs] = await Promise.all([fullBytes != null ? { bytes: fullBytes } : listAll("full"), listAll("thumb")]);
+    const bytes = full.bytes + thumbs.bytes;
+    await api("usage", { method: "POST", body: { bytes } });
+    S.usageKnown = true;
+    S.bytes = bytes;
+    const c = readCache();
+    if (c) {
+      c.bytes = bytes;
+      localStorage.setItem(CACHE_KEY, JSON.stringify(c));
+    }
+    if (S.view === "library" && S.photos.length) $("viewSub").textContent = `${plural(S.photos.length, "photo")}, ${fmtBytes(S.bytes)} of ${fmtBytes(S.limit)} free storage used`;
+  })().catch(() => {});
+  return S.measuring;
+}
+
+// Loads the library. The file list is only re-read when photos were added or
+// removed since this device last read it; otherwise the saved copy is used.
+async function load({ force = false } = {}) {
+  const meta = await api("library");
+  const cached = readCache();
+  let names;
+  if (!force && cached?.photos && cached.changed && cached.changed >= meta.changed) {
+    names = cached.photos;
+  } else {
+    const r = await listAll("full", (n) => setLoading(`Loading your library… ${n.toLocaleString()} photos`));
+    names = r.names;
+    measureStorage(r.bytes);
+  }
+  S.usageKnown = meta.usedBytes != null;
+  if (!S.usageKnown && !S.measuring) measureStorage(null);
+  const d = {
+    photos: names,
+    favorites: meta.favorites,
+    trash: meta.trash,
+    albums: meta.albums,
+    trashDays: meta.trashDays,
+    limitBytes: meta.limitBytes,
+    bytes: meta.usedBytes ?? cached?.bytes ?? null,
+    changed: meta.changed,
+  };
+  const before = JSON.stringify(cached && { ...cached, bytes: 0 });
   applyLibrary(d);
   S.loadedAt = Date.now();
   S.error = null;
-  api("usage", { method: "POST", body: { bytes } }).catch(() => {});
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify(d));
   } catch {}
+  return before !== JSON.stringify({ ...d, bytes: 0 }); // true if anything changed
 }
 
 async function boot() {
-  // Show the copy saved on this device right away, then refresh it.
-  let cached = null;
-  try {
-    cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-  } catch {}
-  if (cached?.photos && !S.loadedAt) {
+  // Show the copy saved on this device right away, then check for changes.
+  const cached = readCache();
+  const showedCache = !!cached?.photos && !S.loadedAt;
+  if (showedCache) {
     applyLibrary(cached);
     $("login").hidden = true;
     $("app").hidden = false;
+    hideLoading();
     render();
   }
   try {
-    await load();
+    const changed = await load();
+    if (showedCache && !changed) return;
   } catch (err) {
     if (err instanceof AuthError) return;
-    if (cached?.photos) {
+    if (showedCache) {
       toast("Couldn't refresh your library. Showing what was saved on this device.");
       return;
     }
@@ -191,6 +256,7 @@ async function boot() {
   }
   $("login").hidden = true;
   $("app").hidden = false;
+  hideLoading();
   render();
 }
 
@@ -230,20 +296,45 @@ function daysLeft(p) {
 function cellHTML(p) {
   return `<button class="cell${S.selected.has(p.id) ? " sel" : ""}" data-id="${p.id}" aria-label="${esc(fmtDay(p.t))}"><img src="${esc(p.thumb)}" alt="" loading="lazy" decoding="async" crossorigin="anonymous">${S.favs.has(p.id) && S.view !== "trash" ? `<span class="fav-badge">${HEART}</span>` : ""}${S.view === "trash" ? `<span class="days-left">${daysLeft(p)}</span>` : ""}</button>`;
 }
+// Each month starts as an empty block of exactly the right height. Its photos
+// are only added (and their thumbnails downloaded) as it nears the screen.
+const fills = new Map();
+let fillObserver = null;
+function placeholder(ps) {
+  const key = `g${fills.size + 1}`;
+  fills.set(key, ps);
+  const width = $("main").clientWidth || innerWidth;
+  const cell = (width - 2 * (S.cols - 1)) / S.cols;
+  const rows = Math.ceil(ps.length / S.cols);
+  return `<div class="grid" data-fill="${key}" style="height:${Math.round(rows * cell + (rows - 1) * 2)}px"></div>`;
+}
 function gridHTML(list) {
   let html = "";
-  let cur = null;
-  for (const p of list) {
-    const d = new Date(p.t);
-    const key = `${d.getFullYear()}-${d.getMonth()}`;
-    if (key !== cur) {
-      if (cur !== null) html += "</div></section>";
-      cur = key;
-      html += `<section class="month" data-month="${key}"><h2>${MONTHS[d.getMonth()]} <span>${d.getFullYear()}</span></h2><div class="grid">`;
-    }
-    html += cellHTML(p);
+  for (const [key, ps] of groupBy(list, (p) => `${new Date(p.t).getFullYear()}-${new Date(p.t).getMonth()}`)) {
+    const d = new Date(ps[0].t);
+    html += `<section class="month" data-month="${key}"><h2>${MONTHS[d.getMonth()]} <span>${d.getFullYear()}</span></h2>${placeholder(ps)}</section>`;
   }
-  return html ? html + "</div></section>" : "";
+  return html;
+}
+function fillGrid(g) {
+  fillObserver?.unobserve(g);
+  const ps = fills.get(g.dataset.fill);
+  if (!ps) return;
+  g.innerHTML = ps.map(cellHTML).join("");
+  g.style.height = "";
+  g.removeAttribute("data-fill");
+}
+function watchFills(root) {
+  fillObserver ||= new IntersectionObserver(
+    (entries) => entries.forEach((e) => e.isIntersecting && fillGrid(e.target)),
+    { rootMargin: "1200px 0px" }
+  );
+  root.querySelectorAll(".grid[data-fill]").forEach((g) => fillObserver.observe(g));
+}
+// Updates one photo's square (for example its heart) without redrawing the page.
+function refreshCell(id) {
+  const p = S.byId.get(id);
+  document.querySelectorAll(`.cell[data-id="${id}"]`).forEach((c) => p && (c.outerHTML = cellHTML(p)));
 }
 
 function renderYears(el) {
@@ -327,6 +418,8 @@ const VIEWS = ["library", "memories", "favorites", "albums", "album", "trash"];
 
 function render() {
   const { view } = S;
+  fillObserver?.disconnect();
+  fills.clear();
   for (const v of VIEWS) $("view-" + v).hidden = v !== view;
   const tab = view === "album" || view === "trash" ? "albums" : view;
   for (const b of document.querySelectorAll(".tabbar button")) {
@@ -350,7 +443,10 @@ function render() {
         : view === "library" && S.bytes
           ? `${plural(list.length, "photo")}, ${fmtBytes(S.bytes)} of ${fmtBytes(S.limit)} free storage used`
           : plural(list.length, "photo");
-  $("libModes").hidden = view !== "library" || S.selecting || !S.photos.length;
+  $("libRow").hidden = view !== "library" || S.selecting || !S.photos.length;
+  $("sizeBtns").hidden = S.libMode !== "all";
+  $("smallerBtn").disabled = S.cols >= 12;
+  $("largerBtn").disabled = S.cols <= 2;
   for (const b of $("libModes").querySelectorAll("button")) b.setAttribute("aria-selected", String(b.dataset.mode === S.libMode));
   const gridView = ["library", "favorites", "album", "trash"].includes(view);
   $("slideshowBtn").hidden = !gridView || view === "trash" || !list.length || S.selecting;
@@ -376,8 +472,9 @@ function render() {
   if (view === "library" && S.libMode === "years") return renderYears(el);
   if (view === "library" && S.libMode === "months") return renderMonths(el);
   if (view === "trash") {
-    el.innerHTML = `<p class="trash-note">Photos here are deleted for good after ${S.trashDays} days. Until then they still count toward your storage.</p><section class="month"><div class="grid">${list.map(cellHTML).join("")}</div></section>`;
+    el.innerHTML = `<p class="trash-note">Photos here are deleted for good after ${S.trashDays} days. Until then they still count toward your storage.</p><section class="month">${placeholder(list)}</section>`;
   } else el.innerHTML = gridHTML(list);
+  watchFills(el);
   updateSelbar();
 }
 
@@ -464,16 +561,34 @@ $("main").addEventListener("touchmove", (e) => {
   }
 }, { passive: true });
 $("main").addEventListener("touchend", () => (pinchBase = 0));
+// Keyboard: + and − change photo size. Ctrl/Cmd + and − are left alone,
+// because those zoom the browser itself.
 document.addEventListener("keydown", (e) => {
   if (!$("viewer").hidden || !$("player").hidden || e.target.tagName === "INPUT") return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === "+" || e.key === "=") setCols(S.cols - 1);
   if (e.key === "-") setCols(S.cols + 1);
 });
+$("largerBtn").onclick = () => setCols(S.cols - 1);
+$("smallerBtn").onclick = () => setCols(S.cols + 1);
 function setCols(n) {
-  S.cols = Math.max(1, Math.min(12, n));
+  const cols = Math.max(2, Math.min(12, n));
+  if (cols === S.cols) return;
+  S.cols = cols;
   localStorage.setItem("cols", S.cols);
-  $("main").style.setProperty("--cols", S.cols);
+  render();
 }
+let resizeTimer;
+let lastWidth = innerWidth;
+addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (innerWidth !== lastWidth && !$("app").hidden) {
+      lastWidth = innerWidth;
+      render();
+    }
+  }, 200);
+});
 
 // ---------- selection ----------
 $("selectBtn").onclick = () => (S.selecting ? exitSelect() : enterSelect());
@@ -682,7 +797,7 @@ async function removePhotos(photos) {
       }
       sortLists();
       toast(`Deleted ${n} for good.`);
-      load().then(render).catch(() => {}); // refresh storage used
+      load().then(render).catch(() => {}); // re-read the list and storage used
     } else {
       await inChunks("trash", photos, 5000);
       const now = Date.now();
@@ -836,6 +951,9 @@ function openViewer(list, i) {
 }
 function closeViewer() {
   $("viewer").hidden = true;
+  // Favorites (and albums showing it) need a redraw if a heart changed.
+  if (favsChangedInViewer && (S.view === "favorites" || S.view === "albums")) render();
+  favsChangedInViewer = false;
   document.body.classList.remove("no-scroll");
   vImg.removeAttribute("src");
   if (V.url) URL.revokeObjectURL(V.url);
@@ -894,12 +1012,14 @@ function step(d) {
 $("vClose").onclick = closeViewer;
 $("vPrev").onclick = () => step(-1);
 $("vNext").onclick = () => step(1);
+let favsChangedInViewer = false;
 $("vFav").onclick = () => {
   const p = V.list[V.i];
   S.favs.has(p.id) ? S.favs.delete(p.id) : S.favs.add(p.id);
   saveFavs();
   $("vFav").setAttribute("aria-pressed", String(S.favs.has(p.id)));
-  render();
+  refreshCell(p.id);
+  favsChangedInViewer = true;
 };
 $("vPlay").onclick = () => {
   const photos = [...V.list.slice(V.i), ...V.list.slice(0, V.i)];
@@ -973,10 +1093,18 @@ function rel(clientX, clientY) {
   const r = stage.getBoundingClientRect();
   return { x: clientX - r.left - r.width / 2, y: clientY - r.top - r.height / 2 };
 }
+// The size the photo itself is drawn at on screen (it's centered in its box).
+function shownSize() {
+  const W = stage.clientWidth, H = stage.clientHeight;
+  const nw = vImg.naturalWidth || W, nh = vImg.naturalHeight || H;
+  const fit = Math.min(W / nw, H / nh);
+  return { w: nw * fit, h: nh * fit, W, H };
+}
 // Keeps the photo's edges from being dragged past the edge of the screen.
 function clampPan() {
-  const bx = Math.max(0, (vImg.offsetWidth * Z.s - stage.clientWidth) / 2);
-  const by = Math.max(0, (vImg.offsetHeight * Z.s - stage.clientHeight) / 2);
+  const { w, h, W, H } = shownSize();
+  const bx = Math.max(0, (w * Z.s - W) / 2);
+  const by = Math.max(0, (h * Z.s - H) / 2);
   Z.x = clampN(Z.x, -bx, bx);
   Z.y = clampN(Z.y, -by, by);
 }
@@ -1126,6 +1254,7 @@ document.addEventListener("keydown", (e) => {
   if ($("viewer").hidden) return;
   if (e.key === "ArrowRight" && Z.s <= 1.01) step(1);
   if (e.key === "ArrowLeft" && Z.s <= 1.01) step(-1);
+  if (e.ctrlKey || e.metaKey) return; // browser zoom, not photo zoom
   if (e.key === "+" || e.key === "=") {
     zoomAt({ x: 0, y: 0 }, Math.min(MAX_ZOOM, Z.s * 1.5));
     settle();
@@ -1239,10 +1368,19 @@ async function startUpload(files) {
     wake = await navigator.wakeLock?.request("screen");
   } catch {}
   showUploadModal("Adding photos", "Getting started…");
+  // Finish any library refresh first, so photos just uploaded are recognized.
+  if (S.refreshing) {
+    $("upText").textContent = "Updating your library…";
+    await S.refreshing.catch(() => {});
+  }
+  if (!S.usageKnown) {
+    $("upText").textContent = "Checking how much storage you've used…";
+    await (S.measuring || measureStorage(null));
+  }
   let stats;
   try {
     stats = await uploadPhotos(files, {
-      existing: new Set(S.byId.keys()),
+      existing: new Set([...S.byId.keys(), ...S.sessionIds]),
       api,
       signal: uploading.signal,
       onProgress: (s) => {
@@ -1258,11 +1396,14 @@ async function startUpload(files) {
     stats = { added: 0, duplicates: 0, videos: 0, other: 0, failed: 0, failedNames: [], lastError: err.message };
   }
   wake?.release().catch(() => {});
+  (stats.addedIds || []).forEach((id) => S.sessionIds.add(id));
   const stopped = uploading.signal.aborted;
   uploading = null;
   $("upTitle").textContent = stats.storageFull ? (/storage is full/i.test(stats.storageFull) ? "Storage is full" : "Upload paused") : stopped ? "Upload stopped" : "Upload finished";
   $("upText").textContent =
-    !stats.added && !stats.failed && stats.duplicates
+    stats.storageFull
+      ? `Added ${plural(stats.added, "photo")}.`
+      : !stats.added && !stats.failed && stats.duplicates
       ? "Nothing new to add. These photos are already in your library."
       : !stats.added && !stats.failed && !stats.duplicates
         ? "No photos found. Only photos are added; videos and other files are skipped."
@@ -1281,10 +1422,11 @@ async function startUpload(files) {
   $("upCancel").hidden = true;
   $("upDone").hidden = false;
   $("upBar").style.transform = "scaleX(1)";
+  S.refreshing = load().then(render);
   try {
-    await load();
-    render();
+    await S.refreshing;
   } catch {}
+  S.refreshing = null;
 }
 
 boot();

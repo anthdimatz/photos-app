@@ -108,14 +108,20 @@ svg { width: 22px; height: 22px; fill: currentColor; flex: none; }
 main { padding-bottom: calc(var(--tabbar) + 16px); }
 
 /* ---------- photo grid ---------- */
-.month { content-visibility: auto; contain-intrinsic-size: auto 600px; }
+.loading {
+  position: fixed; inset: 0; z-index: 200; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  background: var(--bg); color: var(--muted); font-size: 15px; padding: 24px; text-align: center;
+}
+.loading img { border-radius: 15px; }
+.loading p { margin: 0; font-variant-numeric: tabular-nums; }
+.loading-spin { width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid var(--line); border-top-color: var(--accent-fill); animation: spin 0.9s linear infinite; }
 .month h2 {
   font: 600 17px/1.2 var(--sans); margin: 0;
   padding: 18px max(16px, env(safe-area-inset-left)) 8px;
 }
 .month h2 span { color: var(--muted); font-weight: 400; }
 .grid {
-  display: grid; grid-template-columns: repeat(var(--cols, 3), 1fr); gap: 2px;
+  display: grid; align-content: start; grid-template-columns: repeat(var(--cols, 3), 1fr); gap: 2px;
   touch-action: pan-y;
 }
 .cell { position: relative; aspect-ratio: 1; overflow: hidden; background: var(--surface); display: block; }
@@ -189,8 +195,10 @@ main { padding-bottom: calc(var(--tabbar) + 16px); }
 .viewer { position: fixed; inset: 0; z-index: 50; background: #000; color: #fff; touch-action: none; }
 .v-stage { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; }
 .v-stage { touch-action: none; }
+/* The photo box always fills the screen; object-fit keeps the whole photo
+   visible inside it, on tall phones and wide computer screens alike. */
 .v-stage img {
-  max-width: 100%; max-height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none;
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none;
   transform-origin: center center; will-change: transform; transition: transform 0.25s ease, opacity 0.2s;
   -webkit-touch-callout: none;
 }
@@ -315,10 +323,16 @@ main { padding-bottom: calc(var(--tabbar) + 16px); }
 /* ---------- back button, library modes ---------- */
 .back { display: inline-flex; align-items: center; gap: 2px; color: var(--accent); font-size: 16px; font-weight: 500; margin: 0 0 4px -6px; padding: 2px 4px; }
 .back svg { width: 20px; height: 20px; }
+.lib-row { flex: 0 0 100%; display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .seg-bar {
-  flex-basis: 100%; display: flex; gap: 2px; padding: 2px; margin-top: 10px;
+  flex: 1; display: flex; gap: 2px; padding: 2px;
   background: var(--surface); border-radius: 10px; max-width: 420px;
 }
+.size-btns { display: flex; gap: 2px; padding: 2px; background: var(--surface); border-radius: 10px; }
+.size-btns button { width: 34px; padding: 4px 0; border-radius: 8px; font-size: 18px; font-weight: 600; line-height: 1.2; }
+.size-btns button:hover { background: var(--bg); }
+.size-btns button:disabled { opacity: 0.35; }
+@media (pointer: coarse) { .size-btns { display: none; } }
 .seg-bar button { flex: 1; padding: 6px 10px; border-radius: 8px; font-size: 14px; font-weight: 600; color: var(--muted); }
 .seg-bar button[aria-selected="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }
 .topbar { flex-wrap: wrap; }

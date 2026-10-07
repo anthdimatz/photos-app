@@ -223,7 +223,7 @@ async function put(url, blob) {
 // onProgress({ done, total, added, duplicates, videos, other, failed, etaSeconds })
 export async function uploadPhotos(files, { existing, api, onProgress, signal }) {
   const { photos, videos, other } = sortFiles(files);
-  const stats = { done: 0, total: photos.length, added: 0, duplicates: 0, videos, other, failed: 0, failedNames: [], etaSeconds: null };
+  const stats = { done: 0, total: photos.length, added: 0, addedIds: [], duplicates: 0, videos, other, failed: 0, failedNames: [], etaSeconds: null };
   const report = () => onProgress({ ...stats });
   report();
   const seen = new Set(existing);
@@ -286,6 +286,7 @@ export async function uploadPhotos(files, { existing, api, onProgress, signal })
           await put(u.thumb, item.thumb);
           await put(u.full, item.full);
           stats.added++;
+          stats.addedIds.push(item.id);
         } catch (err) {
           stats.failed++;
           stats.failedNames.push(item.file.name);
