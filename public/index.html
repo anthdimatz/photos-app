@@ -37,6 +37,9 @@
   <div id="app" hidden>
     <header class="topbar">
       <div class="topbar-text">
+        <button id="backBtn" class="back" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.4 4.6 8 12l7.4 7.4-1.4 1.4L5.2 12 14 3.2z"/></svg><span>Albums</span>
+        </button>
         <h1 id="viewTitle">Library</h1>
         <p id="viewSub" class="sub"></p>
       </div>
@@ -47,7 +50,18 @@
         <button id="surpriseBtn" class="pill pill-keep" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l1.9 5.6 5.6 1.9-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.9zM18.5 15l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg><span>New memory</span>
         </button>
+        <button id="newAlbumBtn" class="pill pill-keep" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg><span>New album</span>
+        </button>
+        <button id="selectAllBtn" class="pill" hidden>Select all</button>
         <button id="selectBtn" class="pill">Select</button>
+        <button id="albumMenuBtn" class="pill pill-icon" aria-label="Album options" aria-haspopup="menu" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        </button>
+        <div id="albumMenu" class="add-menu" role="menu" hidden>
+          <button data-album-act="rename" role="menuitem"><strong>Rename album</strong></button>
+          <button data-album-act="delete" role="menuitem"><strong>Delete album</strong><span>The photos stay in your library.</span></button>
+        </div>
         <button id="uploadBtn" class="pill pill-icon" aria-label="Add photos" aria-haspopup="menu">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
         </button>
@@ -57,20 +71,32 @@
           <p class="add-tip">You can also drag photos or whole folders onto this page.</p>
         </div>
       </div>
+      <div id="libModes" class="seg-bar" role="tablist" aria-label="Library view" hidden>
+        <button data-mode="years" role="tab">Years</button>
+        <button data-mode="months" role="tab">Months</button>
+        <button data-mode="all" role="tab">All Photos</button>
+      </div>
     </header>
 
     <main id="main">
       <section id="view-library" class="view"></section>
       <section id="view-memories" class="view" hidden></section>
       <section id="view-favorites" class="view" hidden></section>
+      <section id="view-albums" class="view" hidden></section>
+      <section id="view-album" class="view" hidden></section>
+      <section id="view-trash" class="view" hidden></section>
     </main>
 
     <div id="selbar" class="selbar" hidden>
       <span id="selCount" class="sel-count">Select photos</span>
       <div class="selbar-actions">
-        <button data-act="slideshow">Slideshow</button>
-        <button data-act="movie">Make movie</button>
-        <button data-act="favorite">Favorite</button>
+        <button data-act="save" data-not="trash">Save</button>
+        <button data-act="addAlbum" data-not="trash album">Add to album</button>
+        <button data-act="removeAlbum" data-only="album">Remove from album</button>
+        <button data-act="slideshow" data-not="trash">Slideshow</button>
+        <button data-act="movie" data-not="trash">Make movie</button>
+        <button data-act="favorite" data-not="trash">Favorite</button>
+        <button data-act="recover" data-only="trash">Recover</button>
         <button data-act="delete" class="danger">Delete</button>
       </div>
     </div>
@@ -88,6 +114,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-8-4.9-8-11A4.5 4.5 0 0 1 12 6.8a4.5 4.5 0 0 1 8 2.7c0 6.1-8 11-8 11z"/></svg>
         <span>Favorites</span>
       </button>
+      <button data-view="albums">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h13a1 1 0 0 1 1 1v13h-2V5H7zM3 7h13a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"/></svg>
+        <span>Albums</span>
+      </button>
     </nav>
 
     <input id="fileInput" type="file" accept="image/*,.heic,.heif" multiple hidden>
@@ -104,6 +134,10 @@
       <span id="vCount" class="v-count"></span>
     </div>
     <div class="v-bottom">
+      <button id="vSave" class="v-icon" aria-label="Save photo">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l4.2 4.2-1.4 1.4L13 6.3V15h-2V6.3L9.2 8.1 7.8 6.7zM5 10h3v2H6v8h12v-8h-2v-2h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V11a1 1 0 0 1 1-1z"/></svg>
+      </button>
+      <button id="vRecover" class="v-btn" hidden>Recover</button>
       <button id="vFav" class="v-icon" aria-label="Favorite" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-8-4.9-8-11A4.5 4.5 0 0 1 12 6.8a4.5 4.5 0 0 1 8 2.7c0 6.1-8 11-8 11z"/></svg>
       </button>
@@ -192,10 +226,32 @@
       <p id="upText" class="modal-text"></p>
       <div class="meter"><div id="upBar"></div></div>
       <p id="upEta" class="modal-eta"></p>
+      <p id="upNow" class="modal-now"></p>
       <p id="upSkip" class="modal-note"></p>
       <p id="upNote" class="modal-note"></p>
       <button id="upCancel" class="sheet-link">Stop</button>
       <button id="upDone" class="btn-primary" hidden>Done</button>
+    </div>
+  </div>
+
+  <!-- Add to album -->
+  <div id="albumPicker" class="modal" hidden>
+    <div class="modal-card picker">
+      <h2>Add to album</h2>
+      <p id="pickerText" class="modal-text"></p>
+      <div id="pickerList" class="picker-list"></div>
+      <button id="pickerCancel" class="sheet-link">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Save several photos -->
+  <div id="saveModal" class="modal" hidden>
+    <div class="modal-card">
+      <h2 id="saveTitle">Saving photos</h2>
+      <p id="saveText" class="modal-text"></p>
+      <div class="meter"><div id="saveBar"></div></div>
+      <button id="saveGo" class="btn-primary" hidden>Save</button>
+      <button id="saveCancel" class="sheet-link">Cancel</button>
     </div>
   </div>
 

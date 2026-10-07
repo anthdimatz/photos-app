@@ -117,16 +117,63 @@ function loadImage(blob) {
     img.src = url;
   });
 }
-let heicMod = null;
+// HEIC decoding (Chrome and Edge on Windows) is slow, especially for 48-megapixel
+// iPhone photos. Each copy of the decoder runs in its own background thread, so
+// a computer with several cores and enough memory decodes several at once.
+const heicPool = [];
+let heicLoads = 0;
+function heicPoolSize() {
+  const cores = navigator.hardwareConcurrency || 2;
+  const mem = navigator.deviceMemory || 8;
+  if (!matchMedia("(pointer: fine)").matches || mem <= 4) return 1;
+  return Math.max(1, Math.min(3, cores - 1));
+}
+async function getDecoder() {
+  while (heicPool.length < heicPoolSize()) {
+    heicPool.push({ busy: 0, mod: import(`${HEIC_URL}?copy=${++heicLoads}`) });
+  }
+  const d = heicPool.reduce((a, b) => (b.busy < a.busy ? b : a));
+  d.busy++;
+  try {
+    return { d, mod: await d.mod };
+  } catch (err) {
+    d.busy--;
+    heicPool.splice(heicPool.indexOf(d), 1);
+    throw new Error("The HEIC converter didn't load. Check your internet connection and try again.");
+  }
+}
+// Swap out a decoder that stopped responding (for example, it ran out of memory).
+function replaceDecoder(d) {
+  const i = heicPool.indexOf(d);
+  if (i >= 0) heicPool.splice(i, 1);
+}
+
 async function decode(file) {
   try {
     return await loadImage(file);
   } catch (err) {
     if (!isHeic(file)) throw err;
   }
-  heicMod ||= await import(HEIC_URL);
-  const bmp = await heicMod.heicTo({ blob: file, type: "bitmap" });
-  return { src: bmp, w: bmp.width, h: bmp.height, done: () => bmp.close?.() };
+  const { d, mod } = await getDecoder();
+  try {
+    // Shrinking while decoding keeps memory low for very large photos.
+    const options = file.size > 1_500_000 ? { resizeWidth: 2560, resizeQuality: "high" } : undefined;
+    const bmp = await withTimeout(mod.heicTo({ blob: file, type: "bitmap", options }), 120_000);
+    return { src: bmp, w: bmp.width, h: bmp.height, done: () => bmp.close?.() };
+  } catch (err) {
+    if (err.message === "timeout") replaceDecoder(d);
+    throw err;
+  } finally {
+    d.busy--;
+  }
+}
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("timeout")), ms))),
+  ]);
 }
 
 function toJpeg(source, w, h, quality) {
@@ -182,7 +229,7 @@ export async function uploadPhotos(files, { existing, api, onProgress, signal })
   const seen = new Set(existing);
   const desktop = matchMedia("(pointer: fine)").matches;
   const workers = desktop ? Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 1)) : 2;
-  const batchSize = desktop ? 10 : 6;
+  const batchSize = desktop ? 4 : 3; // small batches keep the counter moving
   const started = performance.now();
   let uploadedWork = 0; // photos that needed real work (not duplicates), for the time estimate
   let queue = [];
@@ -206,12 +253,19 @@ export async function uploadPhotos(files, { existing, api, onProgress, signal })
     if (!batch.length) return;
     let uploads;
     try {
-      ({ uploads } = await api("uploads", {
-        method: "POST",
-        body: { items: batch.map(({ id, t, w, h, full, thumb }) => ({ id, t, w, h, size: full.size + thumb.size })) },
-      }));
+      const body = { items: batch.map(({ id, t, w, h, full, thumb }) => ({ id, t, w, h, size: full.size + thumb.size })) };
+      for (let attempt = 0; ; attempt++) {
+        try {
+          ({ uploads } = await api("uploads", { method: "POST", body }));
+          break;
+        } catch (err) {
+          // Storage full or signed out: stop. Anything else: wait and try again.
+          if (attempt >= 3 || err.code === "storage_full" || err.code === "usage_unknown" || err.name === "AuthError" || /Sign in/.test(err.message)) throw err;
+          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        }
+      }
     } catch (err) {
-      if (err.code === "storage_full") {
+      if (err.code === "storage_full" || err.code === "usage_unknown") {
         halted = true;
         stats.storageFull = err.message;
         return;
@@ -247,8 +301,12 @@ export async function uploadPhotos(files, { existing, api, onProgress, signal })
     while (next < photos.length) {
       if (signal?.aborted || halted) return;
       const file = photos[next++];
+      stats.current = file.name;
+      report();
+      let item;
       try {
-        const item = { file, ...(await identify(file)) };
+        // No single photo can hold up the rest: give up on it after 3 minutes.
+        item = { file, ...(await withTimeout(identify(file), 60_000)) };
         if (seen.has(item.id)) {
           stats.duplicates++;
           tick(false);
@@ -256,13 +314,15 @@ export async function uploadPhotos(files, { existing, api, onProgress, signal })
         }
         seen.add(item.id);
         // Resize first, then push: `queue` is swapped out whenever a batch is sent.
-        const ready = await render(item);
+        const ready = await withTimeout(render(item), 180_000);
         queue.push(ready);
         if (queue.length >= batchSize) await flush();
       } catch (err) {
+        if (item) seen.delete(item.id); // a failed photo isn't "already uploaded"
         stats.failed++;
         stats.failedNames.push(file.name);
-        if (err?.message && err.message !== "unreadable") stats.lastError = err.message;
+        if (err?.message === "timeout") stats.lastError = "Some photos took too long to process and were skipped.";
+        else if (err?.message && err.message !== "unreadable") stats.lastError = err.message;
         tick(true);
       }
     }
@@ -271,6 +331,7 @@ export async function uploadPhotos(files, { existing, api, onProgress, signal })
   await Promise.all(Array.from({ length: workers }, worker));
   if (!halted) await flush();
   stats.etaSeconds = 0;
+  stats.current = null;
   report();
   return stats;
 }
