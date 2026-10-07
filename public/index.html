@@ -98,6 +98,7 @@
       <section id="view-albums" class="view" hidden></section>
       <section id="view-album" class="view" hidden></section>
       <section id="view-trash" class="view" hidden></section>
+      <section id="view-places" class="view" hidden></section>
     </main>
 
     <div id="selbar" class="selbar" hidden>
@@ -135,6 +136,8 @@
 
     <input id="fileInput" type="file" accept="image/*,.heic,.heif" multiple hidden>
     <input id="folderInput" type="file" webkitdirectory multiple hidden>
+    <input id="scanInput" type="file" webkitdirectory multiple hidden>
+    <input id="scanFilesInput" type="file" accept="image/*,.heic,.heif" multiple hidden>
     <div id="dropHint" class="drop-hint" hidden>Drop photos to add them</div>
   </div>
 
@@ -265,6 +268,30 @@
       <div class="meter"><div id="saveBar"></div></div>
       <button id="saveGo" class="btn-primary" hidden>Save</button>
       <button id="saveCancel" class="sheet-link">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Scan a folder for places and folder albums -->
+  <div id="scanModal" class="modal" hidden>
+    <div class="modal-card">
+      <h2 id="scanTitle">Reading your photos</h2>
+      <p id="scanText" class="modal-text"></p>
+      <div class="meter"><div id="scanBar"></div></div>
+      <p id="scanNote" class="modal-note">Nothing is uploaded. The app only reads where each photo was taken and which folder it's in.</p>
+      <button id="scanStop" class="sheet-link">Stop</button>
+      <button id="scanDone" class="btn-primary" hidden>Done</button>
+    </div>
+  </div>
+
+  <!-- Choose which folders become albums -->
+  <div id="folderChooser" class="modal" hidden>
+    <div class="modal-card picker">
+      <h2>Albums from folders</h2>
+      <p class="modal-text">Choose which folders to turn into albums. Photos stay in your library too.</p>
+      <div id="fcRoots"></div>
+      <div id="fcList" class="picker-list"></div>
+      <button id="fcCreate" class="btn-primary">Create albums</button>
+      <button id="fcSkip" class="sheet-link">Not now</button>
     </div>
   </div>
 

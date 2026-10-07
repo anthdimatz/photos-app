@@ -69,6 +69,13 @@ The app reads each photo's original capture date, so everything sorts correctly 
 - **Options** (while playing): choose music (two built-in soundtracks, or a song file from your phone), the shape (wide for TVs, tall for phones), the pace, and **Pick different photos**.
 - **Save video:** plays the movie through once while recording, then tap **Save video** and choose **Save Video** to put it in your Camera Roll. Keep the screen on while it records. Videos can be up to 10 minutes long.
 
+## Places, trips and folder albums
+
+- **Find places and folder albums** (Albums tab): choose the folder on your drive you uploaded from. The app reads where each photo was taken and which folder it's in, without uploading anything again. Then it offers to turn folders into albums. "Photos/Europe/Italy" goes into a **Europe** album. If you choose the Europe folder itself, you can pick one Europe album or separate Italy and France albums.
+- **Places** shows your photos on a map, with a list of towns and cities. Place names come from a built-in list of world towns (GeoNames), worked out on your device. The map is drawn by OpenStreetMap.
+- **Trips** appear once photos have locations: stretches of time more than 80 km from home, named like "France and Italy, July 2024".
+- New uploads from a computer keep their location and folder automatically, and join albums made from the same folder.
+
 ## If something goes wrong
 
 - **The build fails with "The name in your Wrangler configuration file must match":** the project name in Cloudflare isn't `photos`. Either rename `"name"` in `wrangler.jsonc` to match your project name, or create the project again named `photos`.

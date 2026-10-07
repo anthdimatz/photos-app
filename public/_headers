@@ -5,3 +5,6 @@
 
 /*.js
   Cache-Control: public, max-age=0, must-revalidate
+
+/cities.tsv
+  Cache-Control: public, max-age=604800

@@ -383,3 +383,39 @@ main { padding-bottom: calc(var(--tabbar) + 16px); }
 .picker-list small { color: var(--muted); font-size: 13px; }
 .selbar-actions button[hidden] { display: none; }
 @media (max-width: 520px) { .selbar-actions button { font-size: 14px; padding: 5px 6px; } }
+
+/* ---------- places ---------- */
+.map-wrap { padding: 4px max(16px, env(safe-area-inset-left)) 0; }
+.map { height: min(58vh, 560px); border-radius: 16px; overflow: hidden; background: var(--surface); z-index: 0; }
+.map-msg { height: 100%; display: grid; place-items: center; color: var(--muted); padding: 20px; text-align: center; }
+.pin { position: relative; }
+.pin img { width: 48px; height: 48px; border-radius: 10px; border: 2px solid #fff; object-fit: cover; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35); background: #ccc; display: block; }
+.pin span {
+  position: absolute; top: -7px; right: -9px; min-width: 20px; padding: 1px 6px; border-radius: 10px;
+  background: var(--accent-fill); color: #1b1200; font: 700 11px/18px var(--sans); text-align: center;
+}
+.pin span:empty { display: none; }
+.place-list { padding: 0 max(16px, env(safe-area-inset-left)); }
+.place-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px 0; border-bottom: 0.5px solid var(--line); text-align: left; }
+.place-row img { width: 52px; height: 52px; border-radius: 8px; object-fit: cover; background: var(--surface); flex: none; }
+.place-row strong { display: block; font-size: 16px; font-weight: 600; }
+.place-row small { color: var(--muted); font-size: 13px; }
+.places-card {
+  display: flex; align-items: center; gap: 14px; width: calc(100% - 2 * max(16px, env(safe-area-inset-left))); margin: 0 max(16px, env(safe-area-inset-left));
+  padding: 14px; border-radius: 16px; background: var(--surface); text-align: left;
+}
+.places-card .pc-icon { width: 52px; height: 52px; border-radius: 12px; display: grid; place-items: center; background: var(--bg); color: var(--accent); flex: none; }
+.places-card .pc-icon svg { width: 28px; height: 28px; }
+.places-card strong { display: block; font-size: 16px; font-weight: 600; }
+.places-card small { color: var(--muted); font-size: 13px; line-height: 1.35; display: block; margin-top: 2px; }
+.leaflet-container { font: 12px/1.4 var(--sans); }
+
+/* ---------- folder chooser ---------- */
+.fc-root { margin: 4px 0 10px; font-size: 14px; }
+.fc-root p { margin: 0 0 6px; color: var(--muted); }
+.fc-root .seg { justify-content: center; }
+.fc-root .seg button { background: var(--surface); }
+.picker-list label { display: flex; align-items: center; gap: 12px; padding: 8px 6px; border-radius: 10px; cursor: pointer; }
+.picker-list label:hover { background: var(--surface); }
+.picker-list input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent-fill); flex: none; }
+.fc-root .seg button[aria-pressed="true"] { background: var(--accent-fill); color: #1b1200; }

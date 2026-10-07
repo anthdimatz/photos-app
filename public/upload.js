@@ -55,6 +55,7 @@ export async function filesFromDrop(dataTransfer, onCount) {
         out.push(file);
         if (out.length % 200 === 0) onCount?.(out.length);
       }
+      if (file) file._path = entry.fullPath.replace(/^\//, ""); // keep the folder it came from
     } else if (entry.isDirectory && !isSystemFile(entry.name)) {
       for (const child of await readAll(entry)) await walk(child);
     }
@@ -69,7 +70,7 @@ async function readMeta(file) {
     exifrMod ||= await import(EXIFR_URL);
     const exifr = exifrMod.default || exifrMod;
     const tags = await exifr.parse(file, {
-      pick: ["DateTimeOriginal", "SubSecTimeOriginal", "CreateDate", "Make", "Model"],
+      pick: ["DateTimeOriginal", "SubSecTimeOriginal", "CreateDate", "Make", "Model", "GPSLatitude", "GPSLatitudeRef", "GPSLongitude", "GPSLongitudeRef"],
       reviveValues: false,
     });
     return tags || {};
@@ -102,7 +103,35 @@ async function identify(file) {
     source = await file.arrayBuffer();
   }
   const id = hex16(await crypto.subtle.digest("SHA-256", source));
-  return { id, t: Math.round(t) };
+  // Where the photo was taken, if the camera recorded it.
+  const lat = Number(tags.latitude), lon = Number(tags.longitude);
+  const gps = Number.isFinite(lat) && Number.isFinite(lon) && (lat || lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180
+    ? [Math.round(lat * 1e4) / 1e4, Math.round(lon * 1e4) / 1e4]
+    : null;
+  return { id, t: Math.round(t), gps };
+}
+
+// The folder path a file came from, e.g. "Photos/Europe/Italy/IMG_1.jpg".
+export const pathOf = (file) => file._path || file.webkitRelativePath || "";
+
+// Reads where each photo was taken and which folder it's in, without uploading.
+// Used to add places and folder albums for photos already in the library.
+export async function scanFiles(files, { onProgress, signal }) {
+  const { photos } = sortFiles(files);
+  const found = [];
+  let next = 0, done = 0;
+  const worker = async () => {
+    while (next < photos.length && !signal?.aborted) {
+      const file = photos[next++];
+      try {
+        const info = await withTimeout(identify(file), 60_000);
+        found.push({ id: info.id, gps: info.gps, path: pathOf(file) });
+      } catch {}
+      onProgress?.(++done, photos.length);
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+  return { found, total: photos.length };
 }
 
 function loadImage(blob) {
@@ -223,7 +252,7 @@ async function put(url, blob) {
 // onProgress({ done, total, added, duplicates, videos, other, failed, etaSeconds })
 export async function uploadPhotos(files, { existing, api, onProgress, signal }) {
   const { photos, videos, other } = sortFiles(files);
-  const stats = { done: 0, total: photos.length, added: 0, addedIds: [], duplicates: 0, videos, other, failed: 0, failedNames: [], etaSeconds: null };
+  const stats = { done: 0, total: photos.length, added: 0, addedIds: [], addedItems: [], duplicates: 0, videos, other, failed: 0, failedNames: [], etaSeconds: null };
   const report = () => onProgress({ ...stats });
   report();
   const seen = new Set(existing);
@@ -287,6 +316,7 @@ export async function uploadPhotos(files, { existing, api, onProgress, signal })
           await put(u.full, item.full);
           stats.added++;
           stats.addedIds.push(item.id);
+          stats.addedItems.push({ id: item.id, gps: item.gps, path: pathOf(item.file) });
         } catch (err) {
           stats.failed++;
           stats.failedNames.push(item.file.name);

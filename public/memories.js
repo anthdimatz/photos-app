@@ -35,19 +35,21 @@ export function formatRange(a, b) {
   return `${MONTHS[A.getMonth()]} ${A.getDate()}–${B.getDate()}, ${A.getFullYear()}`;
 }
 
-// Titles a group of photos based on how long it spans.
-export function titleFor(photos) {
+// Titles a group of photos based on how long it spans, and where it was when
+// that's known ("A Weekend in Rome"), otherwise when ("A Weekend in May").
+export function titleFor(photos, where = null) {
   const a = photos[0].t, b = photos[photos.length - 1].t;
   const A = new Date(a);
   const days = Math.round((startOfDay(b) - startOfDay(a)) / DAY) + 1;
   const month = MONTHS[A.getMonth()];
   const sub = formatRange(a, b);
-  if (days === 1) return { title: `A ${WEEKDAYS[A.getDay()]} in ${month}`, subtitle: sub };
+  const place = where || month;
+  if (days === 1) return { title: `A ${WEEKDAYS[A.getDay()]} in ${place}`, subtitle: sub };
   const weekdays = new Set();
   for (let t = startOfDay(a); t <= b; t += DAY) weekdays.add(new Date(t).getDay());
-  if (days <= 3 && (weekdays.has(6) || weekdays.has(0))) return { title: `A Weekend in ${month}`, subtitle: sub };
-  if (days <= 14) return { title: `${NUMBERS[days]} Days in ${month}`, subtitle: sub };
-  if (days <= 62) return { title: `${month} ${A.getFullYear()}`, subtitle: sub };
+  if (days <= 3 && (weekdays.has(6) || weekdays.has(0))) return { title: `A Weekend in ${place}`, subtitle: sub };
+  if (days <= 14) return { title: `${NUMBERS[days]} Days in ${place}`, subtitle: sub };
+  if (days <= 62) return { title: where ? `${where} in ${month}` : `${month} ${A.getFullYear()}`, subtitle: sub };
   return { title: `Moments from ${A.getFullYear()}`, subtitle: sub };
 }
 
@@ -112,7 +114,7 @@ function findEvents(sortedAsc) {
 
 const coverOf = (picks, favs) => picks.find((p) => favs.has(p.id) && p.w >= p.h) || picks.find((p) => p.w >= p.h) || picks[Math.floor(picks.length / 2)];
 
-export function buildMemories(allPhotos, favs) {
+export function buildMemories(allPhotos, favs, whereOf = () => null) {
   if (!allPhotos.length) return { onThisDay: null, events: [], years: [], favorites: null };
   const asc = [...allPhotos].sort((a, b) => a.t - b.t);
 
@@ -142,7 +144,7 @@ export function buildMemories(allPhotos, favs) {
     .filter((e) => dedupeBursts(e.photos, favs).length >= 8)
     .map((e) => {
       const photos = pickPhotos(e.photos, favs, 20);
-      return { key: "e" + e.photos[0].id, ...titleFor(e.photos), photos, source: e.photos, cover: coverOf(photos, favs) };
+      return { key: "e" + e.photos[0].id, ...titleFor(e.photos, whereOf(e.photos)), photos, source: e.photos, cover: coverOf(photos, favs) };
     })
     .reverse();
 
@@ -173,7 +175,7 @@ export function buildMemories(allPhotos, favs) {
 }
 
 // A random memory: a random event, or a random stretch of a few weeks.
-export function surpriseMemory(allPhotos, favs) {
+export function surpriseMemory(allPhotos, favs, whereOf = () => null) {
   if (allPhotos.length < 4) return null;
   const seed = Math.floor(Math.random() * 1e9) + 2;
   const r = rng(seed);
@@ -189,11 +191,11 @@ export function surpriseMemory(allPhotos, favs) {
     if (source.length < 6) source = asc.slice(Math.max(0, asc.length - 30));
   }
   const photos = pickPhotos(source, favs, 18, seed);
-  return { key: "s" + seed, ...titleFor(photos), photos, source, cover: coverOf(photos, favs) };
+  return { key: "s" + seed, ...titleFor(photos, whereOf(photos)), photos, source, cover: coverOf(photos, favs) };
 }
 
 // A memory built from photos the person selected.
-export function memoryFromSelection(photos, favs) {
+export function memoryFromSelection(photos, favs, whereOf = () => null) {
   const asc = [...photos].sort((a, b) => a.t - b.t);
-  return { key: "sel", ...titleFor(asc), photos: asc, source: asc, cover: coverOf(asc, favs) };
+  return { key: "sel", ...titleFor(asc, whereOf(asc)), photos: asc, source: asc, cover: coverOf(asc, favs) };
 }

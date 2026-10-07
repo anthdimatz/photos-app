@@ -1,6 +1,7 @@
 import { Player } from "./player.js";
 import { buildMemories, surpriseMemory, memoryFromSelection, pickPhotos } from "./memories.js";
-import { uploadPhotos, filesFromDrop } from "./upload.js";
+import { uploadPhotos, filesFromDrop, scanFiles } from "./upload.js";
+import { loadCities, citiesReady, placeAt, describe, findTrips } from "./places.js";
 import { withCaptureDate } from "./exif.js";
 import { makeZip } from "./zip.js";
 
@@ -18,6 +19,9 @@ const S = {
   trashDays: 30,
   albums: [],
   sessionIds: new Set(), // photos uploaded from this device since the app opened
+  places: new Map(), // photo id -> [latitude, longitude]
+  collections: new Map(), // automatic albums: trips, places on the map
+  backTo: "albums",
   favs: new Set(),
   view: "library",
   libMode: ["years", "months", "all"].includes(localStorage.getItem("libMode")) ? localStorage.getItem("libMode") : "all",
@@ -222,6 +226,7 @@ async function load({ force = false } = {}) {
     bytes: meta.usedBytes ?? cached?.bytes ?? null,
     changed: meta.changed,
   };
+  syncPlaces(meta.placesAt).catch(() => {});
   const before = JSON.stringify(cached && { ...cached, bytes: 0 });
   applyLibrary(d);
   S.loadedAt = Date.now();
@@ -265,7 +270,35 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // ---------- lists ----------
-const currentAlbum = () => S.albums.find((a) => a.id === S.albumId);
+const currentAlbum = () => S.albums.find((a) => a.id === S.albumId) || S.collections.get(S.albumId);
+
+// ---------- places ----------
+const PLACES_KEY = "places-cache-v1";
+function placeOf(p) {
+  const g = S.places.get(p.id);
+  return g && citiesReady() ? placeAt(g[0], g[1]) : null;
+}
+const whereOf = (photos) => (citiesReady() && S.places.size ? describe(photos.map(placeOf)) : null);
+// Brings locations up to date, then loads place names, then redraws what uses them.
+async function syncPlaces(placesAt) {
+  let cache = null;
+  try {
+    cache = JSON.parse(localStorage.getItem(PLACES_KEY) || "null");
+  } catch {}
+  if (cache?.data && !S.places.size) S.places = new Map(Object.entries(cache.data));
+  if (placesAt && (!cache || placesAt > cache.at)) {
+    const { places } = await api("places");
+    S.places = new Map(Object.entries(places));
+    try {
+      localStorage.setItem(PLACES_KEY, JSON.stringify({ at: placesAt, data: places }));
+    } catch {}
+  }
+  if (S.places.size && !citiesReady()) {
+    await loadCities();
+    S.memories = null;
+    if (["memories", "albums", "places", "album"].includes(S.view) && !$("app").hidden) render();
+  }
+}
 const albumPhotos = (a) =>
   a.photos
     .map((id) => S.byId.get(id))
@@ -366,10 +399,31 @@ function albumCard(attrs, name, list, icon = ALBUM_ICON) {
   const c = list.length ? coverOf(list) : null;
   return `<button class="album-card" ${attrs}><span class="album-cover">${c ? `<img src="${esc(c.thumb)}" alt="" loading="lazy" decoding="async" crossorigin="anonymous">` : icon}</span><strong>${esc(name)}</strong><span>${list.length.toLocaleString()}</span></button>`;
 }
+const PIN_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 1 7 7c0 5-7 13-7 13S5 14 5 9a7 7 0 0 1 7-7zm0 4.2A2.8 2.8 0 1 0 12 11.8 2.8 2.8 0 0 0 12 6.2z"/></svg>';
+// Trips are worked out once, then reused until photos or locations change.
+let tripMemo = { key: "", trips: [] };
+function tripCards() {
+  if (S.photos.length < 8) return "";
+  const key = `${S.photos.length}|${S.photos[0]?.id}|${S.photos[S.photos.length - 1]?.id}|${S.places.size}|${citiesReady()}`;
+  if (tripMemo.key !== key) tripMemo = { key, trips: findTrips([...S.photos].reverse(), placeOf).slice(0, 60) };
+  const trips = tripMemo.trips;
+  for (const tr of trips) S.collections.set(tr.key, { id: tr.key, name: tr.name, photos: tr.photos.map((p) => p.id), auto: true });
+  if (!trips.length) return "";
+  return `<h2 class="albums-section-title">Trips</h2>
+    <div class="album-grid">${trips.map((tr) => albumCard(`data-collection="${tr.key}"`, tr.name, [...tr.photos].reverse())).join("")}</div>`;
+}
 function renderAlbums(el) {
   const favList = S.photos.filter((p) => S.favs.has(p.id));
   const mine = [...S.albums].sort((a, b) => b.created - a.created);
+  const located = S.photos.filter((p) => S.places.has(p.id)).length;
   el.innerHTML = `
+    <h2 class="albums-section-title">Places</h2>
+    ${
+      located
+        ? `<button class="places-card" data-goto="places"><span class="pc-icon">${PIN_ICON}</span><span><strong>See your photos on a map</strong><small>${plural(located, "photo")} with a location</small></span></button>`
+        : `<button class="places-card" data-action="scan"><span class="pc-icon">${PIN_ICON}</span><span><strong>Find where your photos were taken</strong><small>Choose the folder you uploaded from. The app reads each photo's location and folder. Nothing is uploaded again.</small></span></button>`
+    }
+    ${tripCards()}
     <h2 class="albums-section-title">My Albums</h2>
     <div class="album-grid">
       ${albumCard('data-goto="favorites"', "Favorites", favList, HEART)}
@@ -379,6 +433,7 @@ function renderAlbums(el) {
     <div class="albums-utilities">
       <h2>Utilities</h2>
       <button class="util-row" data-goto="trash">${TRASH_ICON}Recently Deleted<span>${S.trashed.length.toLocaleString()}</span></button>
+      <button class="util-row" data-action="scan">${PIN_ICON}Find places and folder albums<span></span></button>
     </div>`;
 }
 
@@ -395,7 +450,7 @@ function renderMemories() {
     el.innerHTML = `<div class="empty"><h2>No memories yet</h2><p>Memories appear once your library has photos from a few different days. Add more photos and check back.</p><button class="btn-primary" data-action="upload">Add photos</button></div>`;
     return;
   }
-  const M = (S.memories ||= buildMemories(S.photos, S.favs));
+  const M = (S.memories ||= buildMemories(S.photos, S.favs, whereOf));
   S.memIndex.clear();
   const featured = M.onThisDay || M.events[0];
   const events = M.events.filter((m) => m !== featured).slice(0, 80);
@@ -408,20 +463,132 @@ function renderMemories() {
   el.innerHTML = html;
 }
 
+// ---------- map ----------
+const LEAFLET = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/";
+const CLUSTER = "https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/";
+let leafletReady = null;
+let map = null;
+function loadCss(href) {
+  const l = document.createElement("link");
+  l.rel = "stylesheet";
+  l.href = href;
+  document.head.appendChild(l);
+}
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error("The map didn't load. Check your connection."));
+    document.head.appendChild(el);
+  });
+}
+function ensureLeaflet() {
+  leafletReady ||= (async () => {
+    loadCss(LEAFLET + "leaflet.css");
+    loadCss(CLUSTER + "MarkerCluster.css");
+    await loadScript(LEAFLET + "leaflet.js");
+    await loadScript(CLUSTER + "leaflet.markercluster.js");
+  })().catch((err) => {
+    leafletReady = null;
+    throw err;
+  });
+  return leafletReady;
+}
+const pinIcon = (p, n) =>
+  L.divIcon({ className: "pin", html: `<img src="${esc(p.thumb)}" alt="" crossorigin="anonymous"><span>${n > 1 ? n.toLocaleString() : ""}</span>`, iconSize: [52, 52], iconAnchor: [26, 26] });
+function openCollection(photos, name, backTo) {
+  const key = `c${Date.now()}`;
+  S.collections.set(key, { id: key, name, photos: photos.map((p) => p.id), auto: true });
+  goTo("album", { albumId: key, backTo });
+}
+function renderPlaces(el) {
+  const located = S.photos.filter((p) => S.places.has(p.id));
+  if (!located.length) {
+    el.innerHTML = `<div class="empty"><h2>No places yet</h2><p>Choose the folder you uploaded from, and the app reads where each photo was taken. Nothing is uploaded again.</p><button class="btn-primary" data-action="scan">Find places</button></div>`;
+    return;
+  }
+  // Group by town or city for the list under the map (reused until things change).
+  const gkey = `${located.length}|${located[0]?.id}|${S.places.size}|${citiesReady()}`;
+  if (S.placeGroupsKey === gkey) return drawPlaces(el, located, S.placeGroups);
+  const groups = new Map();
+  if (citiesReady()) {
+    for (const p of located) {
+      const label = placeOf(p)?.label;
+      if (!label) continue;
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(p);
+    }
+  }
+  S.placeGroups = groups;
+  S.placeGroupsKey = citiesReady() ? gkey : "";
+  drawPlaces(el, located, groups);
+}
+function drawPlaces(el, located, groups) {
+  const rows = [...groups].sort((a, b) => b[1].length - a[1].length).slice(0, 200);
+  el.innerHTML = `<div class="map-wrap"><div id="placesMap" class="map"><div class="map-msg">Loading the map…</div></div></div>
+    <h2 class="albums-section-title">${citiesReady() ? plural(groups.size, "place") : "Finding place names…"}</h2>
+    <div class="place-list">${rows
+      .map(([label, ps]) => `<button class="place-row" data-place="${esc(label)}"><img src="${esc(coverOf(ps).thumb)}" alt="" loading="lazy" crossorigin="anonymous"><span><strong>${esc(label)}</strong><small>${plural(ps.length, "photo")}</small></span></button>`)
+      .join("")}</div>`;
+  ensureLeaflet()
+    .then(() => {
+      if (S.view !== "places" || !document.getElementById("placesMap")) return;
+      if (map) {
+        S.mapView = { center: map.getCenter(), zoom: map.getZoom() };
+        map.remove();
+      }
+      const box = document.getElementById("placesMap");
+      box.innerHTML = "";
+      map = L.map(box, { worldCopyJump: true, zoomControl: !matchMedia("(pointer: coarse)").matches });
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+        referrerPolicy: "strict-origin-when-cross-origin",
+      }).addTo(map);
+      const cluster = L.markerClusterGroup({
+        showCoverageOnHover: false,
+        zoomToBoundsOnClick: false,
+        maxClusterRadius: 70,
+        chunkedLoading: true,
+        iconCreateFunction: (c) => pinIcon(c.getAllChildMarkers()[0].options.photo, c.getChildCount()),
+      });
+      cluster.addLayers(
+        located.map((p) => {
+          const m = L.marker(S.places.get(p.id), { icon: pinIcon(p, 1), photo: p });
+          m.on("click", () => openCollection([p], placeOf(p)?.label || "Photo", "places"));
+          return m;
+        })
+      );
+      // Tapping a group of photos opens them, named after where they were taken.
+      cluster.on("clusterclick", (e) => {
+        const ps = e.layer.getAllChildMarkers().map((m) => m.options.photo);
+        openCollection(ps, whereOf(ps) || plural(ps.length, "photo"), "places");
+      });
+      map.addLayer(cluster);
+      if (S.mapView) map.setView(S.mapView.center, S.mapView.zoom);
+      else map.fitBounds(cluster.getBounds(), { padding: [30, 30], maxZoom: 12 });
+    })
+    .catch((err) => {
+      const box = document.getElementById("placesMap");
+      if (box) box.innerHTML = `<div class="map-msg">${esc(err.message)}</div>`;
+    });
+}
+
 const EMPTY = {
   library: `<div class="empty"><h2>Add your first photos</h2><p>On iPhone, tap Add photos and choose from your library. On a computer, choose a whole folder, even one on an external drive, or drag it onto this page. Videos are skipped.</p><button class="btn-primary" data-action="upload">Add photos</button></div>`,
   favorites: `<div class="empty"><h2>No favorites yet</h2><p>Open a photo and tap the heart. Favorites show up here and get priority in memories.</p></div>`,
   album: `<div class="empty"><h2>This album is empty</h2><p>Go to Library, tap Select, choose photos, then tap Add to album.</p></div>`,
   trash: `<div class="empty"><h2>No recently deleted photos</h2><p>Photos you delete stay here for 30 days, so you can recover them.</p></div>`,
 };
-const VIEWS = ["library", "memories", "favorites", "albums", "album", "trash"];
+const VIEWS = ["library", "memories", "favorites", "albums", "album", "trash", "places"];
 
 function render() {
   const { view } = S;
   fillObserver?.disconnect();
   fills.clear();
   for (const v of VIEWS) $("view-" + v).hidden = v !== view;
-  const tab = view === "album" || view === "trash" ? "albums" : view;
+  const tab = ["album", "trash", "places"].includes(view) ? "albums" : view;
   for (const b of document.querySelectorAll(".tabbar button")) {
     if (b.dataset.view === tab) b.setAttribute("aria-current", "page");
     else b.removeAttribute("aria-current");
@@ -433,10 +600,11 @@ function render() {
   const album = currentAlbum();
   const libGrid = view !== "library" || S.libMode === "all";
   $("viewTitle").textContent =
-    { library: "Library", memories: "Memories", favorites: "Favorites", albums: "Albums", trash: "Recently Deleted" }[view] ?? album?.name ?? "";
-  $("backBtn").hidden = view !== "album" && view !== "trash";
+    { library: "Library", memories: "Memories", favorites: "Favorites", albums: "Albums", trash: "Recently Deleted", places: "Places" }[view] ?? album?.name ?? "";
+  $("backBtn").hidden = !["album", "trash", "places"].includes(view);
+  $("backBtn").querySelector("span").textContent = view === "album" && S.backTo === "places" ? "Places" : "Albums";
   $("viewSub").textContent =
-    view === "memories" || (!list.length && view !== "albums")
+    view === "memories" || view === "places" || (!list.length && view !== "albums")
       ? ""
       : view === "albums"
         ? plural(S.albums.length + 1, "album")
@@ -455,7 +623,7 @@ function render() {
   $("selectAllBtn").hidden = !S.selecting;
   $("surpriseBtn").hidden = view !== "memories" || S.photos.length < 4;
   $("newAlbumBtn").hidden = view !== "albums";
-  $("albumMenuBtn").hidden = view !== "album" || S.selecting;
+  $("albumMenuBtn").hidden = view !== "album" || S.selecting || !!album?.auto;
   $("uploadBtn").hidden = S.selecting || !["library", "memories"].includes(view);
 
   const el = $("view-" + view);
@@ -465,6 +633,7 @@ function render() {
   }
   if (view === "memories") return renderMemories();
   if (view === "albums") return renderAlbums(el);
+  if (view === "places") return renderPlaces(el);
   if (!list.length) {
     el.innerHTML = EMPTY[view];
     return;
@@ -506,7 +675,7 @@ document.querySelector(".tabbar").addEventListener("click", (e) => {
   if (S.view === b.dataset.view) return scrollTo({ top: 0, behavior: "smooth" });
   goTo(b.dataset.view);
 });
-$("backBtn").onclick = () => goTo("albums");
+$("backBtn").onclick = () => goTo(S.view === "album" && S.backTo === "places" ? "places" : "albums");
 $("libModes").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-mode]");
   if (!b) return;
@@ -530,7 +699,7 @@ $("main").addEventListener("click", (e) => {
     }
     return;
   }
-  const t = e.target.closest("[data-year],[data-month-tile],[data-album],[data-goto],[data-mem],[data-action]");
+  const t = e.target.closest("[data-year],[data-month-tile],[data-album],[data-collection],[data-place],[data-goto],[data-mem],[data-action]");
   if (!t) return;
   const d = t.dataset;
   if (d.year) {
@@ -541,11 +710,14 @@ $("main").addEventListener("click", (e) => {
     S.libMode = "all";
     render();
     scrollToSection(`#view-library [data-month="${d.monthTile}"]`);
-  } else if (d.album) goTo("album", { albumId: d.album });
+  } else if (d.album) goTo("album", { albumId: d.album, backTo: "albums" });
+  else if (d.collection) goTo("album", { albumId: d.collection, backTo: "albums" });
+  else if (d.place) openCollection(S.placeGroups?.get(d.place) || [], d.place, "places");
   else if (d.goto) goTo(d.goto);
   else if (d.mem) playMemory(S.memIndex.get(d.mem));
   else if (d.action === "upload") isDesktop() ? $("folderInput").click() : $("fileInput").click();
   else if (d.action === "retry") boot();
+  else if (d.action === "scan") (isDesktop() ? $("scanInput") : $("scanFilesInput")).click();
 });
 
 // Pinch the grid to change how many photos fit across.
@@ -620,6 +792,10 @@ function updateSelbar() {
     const only = b.dataset.only?.split(" "), not = b.dataset.not?.split(" ");
     b.hidden = (only && !only.includes(S.view)) || (not && not.includes(S.view));
   }
+  if (currentAlbum()?.auto) {
+    document.querySelector('[data-act="removeAlbum"]').hidden = true;
+    if (S.view === "album") document.querySelector('[data-act="addAlbum"]').hidden = false;
+  }
   const allFav = n && [...S.selected].every((id) => S.favs.has(id));
   document.querySelector('[data-act="favorite"]').textContent = allFav ? "Unfavorite" : "Favorite";
   document.querySelector('[data-act="delete"]').textContent = S.view === "trash" ? "Delete for good" : "Delete";
@@ -644,7 +820,7 @@ document.querySelector(".selbar-actions").addEventListener("click", async (e) =>
   }
   if (act === "slideshow") return player.open({ photos, kind: "slideshow", loop: true });
   if (act === "movie") {
-    const m = memoryFromSelection(photos, S.favs);
+    const m = memoryFromSelection(photos, S.favs, whereOf);
     return player.open({ photos: m.photos, title: m.title, subtitle: m.subtitle, kind: "memory" });
   }
   if (act === "favorite") {
@@ -925,7 +1101,7 @@ function playMemory(m) {
   });
 }
 $("surpriseBtn").onclick = () => {
-  const m = surpriseMemory(S.photos, S.favs);
+  const m = surpriseMemory(S.photos, S.favs, whereOf);
   if (!m) return toast("Add a few more photos to make a memory.");
   playMemory(m);
 };
@@ -994,7 +1170,8 @@ function showPhoto() {
     }
   });
   $("vDate").textContent = fmtDay(p.t);
-  $("vTime").textContent = fmtTime(p.t);
+  const where = placeOf(p);
+  $("vTime").textContent = where ? `${fmtTime(p.t)} in ${where.label}` : fmtTime(p.t);
   $("vCount").textContent = `${(V.i + 1).toLocaleString()} of ${V.list.length.toLocaleString()}`;
   $("vFav").setAttribute("aria-pressed", String(S.favs.has(p.id)));
   $("vFav").setAttribute("aria-label", S.favs.has(p.id) ? "Remove from favorites" : "Add to favorites");
@@ -1326,7 +1503,12 @@ $("upCancel").onclick = () => {
   $("upEta").textContent = "";
   $("upText").textContent = "Stopping after the photos already in progress…";
 };
-$("upDone").onclick = () => ($("uploadModal").hidden = true);
+$("upDone").onclick = () => {
+  $("uploadModal").hidden = true;
+  // New folders from this upload: offer to make albums from them.
+  if (pendingFolders?.length) openFolderChooser(pendingFolders);
+  pendingFolders = null;
+};
 
 function showUploadModal(title, text) {
   $("uploadModal").hidden = false;
@@ -1397,6 +1579,9 @@ async function startUpload(files) {
   }
   wake?.release().catch(() => {});
   (stats.addedIds || []).forEach((id) => S.sessionIds.add(id));
+  const newItems = stats.addedItems || [];
+  savePlaces(newItems).catch(() => {});
+  pendingFolders = sortIntoFolderAlbums(newItems);
   const stopped = uploading.signal.aborted;
   uploading = null;
   $("upTitle").textContent = stats.storageFull ? (/storage is full/i.test(stats.storageFull) ? "Storage is full" : "Upload paused") : stopped ? "Upload stopped" : "Upload finished";
@@ -1430,3 +1615,202 @@ async function startUpload(files) {
 }
 
 boot();
+
+// ---------- places and folder albums from a scan ----------
+let pendingFolders = null;
+async function savePlaces(items) {
+  const add = {};
+  for (const it of items) if (it.gps && (S.byId.has(it.id) || S.sessionIds.has(it.id))) add[it.id] = it.gps;
+  const n = Object.keys(add).length;
+  if (!n) return 0;
+  for (let i = 0, ids = Object.keys(add); i < ids.length; i += 5000) {
+    const chunk = Object.fromEntries(ids.slice(i, i + 5000).map((id) => [id, add[id]]));
+    await api("places", { method: "POST", body: { add: chunk } });
+  }
+  for (const [id, g] of Object.entries(add)) S.places.set(id, g);
+  try {
+    localStorage.removeItem(PLACES_KEY); // re-download the full list next time
+  } catch {}
+  syncPlaces(0).catch(() => {});
+  S.memories = null;
+  return n;
+}
+
+// Folder names that don't describe anything worth an album.
+const GENERIC = /^(dcim|\d{3}[a-z_]*|camera( roll| uploads)?|photos?|pictures|images|my (pictures|photos)|export(s|ed)?|backups?|iphone|ipad|apple|downloads?|desktop|documents|new folder( \(\d+\))?|untitled( folder)?|all photos|onedrive|google photos|icloud( photos)?|e:|d:|f:)$/i;
+// Groups photos by the folder they came from. "Photos/Europe/Italy/x.jpg" belongs to
+// Europe: the top folder below a general one like "Photos". A named top folder like
+// "Europe/Italy/x.jpg" can be one album (Europe) or one per folder inside (Italy).
+function folderRoots(items) {
+  const roots = new Map();
+  for (const it of items) {
+    const dirs = (it.path || "").split("/").filter(Boolean).slice(0, -1);
+    if (!dirs.length || !(S.byId.has(it.id) || S.sessionIds.has(it.id))) continue;
+    const [root, child] = dirs;
+    if (!roots.has(root)) roots.set(root, { all: [], children: new Map() });
+    const r = roots.get(root);
+    r.all.push(it.id);
+    if (child) {
+      if (!r.children.has(child)) r.children.set(child, []);
+      r.children.get(child).push(it.id);
+    }
+  }
+  return roots;
+}
+function folderCandidates(roots, modes) {
+  const out = [];
+  for (const [root, r] of roots) {
+    const mode = modes.get(root) || (GENERIC.test(root) ? "split" : "one");
+    if (mode === "one") out.push({ name: root, ids: r.all });
+    else for (const [child, ids] of r.children) out.push({ name: child, ids });
+  }
+  return out.filter((c) => c.ids.length);
+}
+const folderAlbum = (name) => S.albums.find((a) => a.source === `folder:${name}`) || S.albums.find((a) => a.name.toLowerCase() === name.toLowerCase());
+function addToAlbum(a, ids) {
+  const have = new Set(a.photos);
+  let n = 0;
+  for (const id of ids) if (!have.has(id)) (a.photos.push(id), have.add(id), n++);
+  return n;
+}
+// After an upload: photos join albums already made from their folder; any new
+// folders are returned so the person can choose whether to make albums.
+function sortIntoFolderAlbums(items) {
+  const roots = folderRoots(items);
+  if (!roots.size) return null;
+  let joined = 0;
+  const fresh = [];
+  for (const c of folderCandidates(roots, new Map())) {
+    const a = S.albums.find((x) => x.source === `folder:${c.name}`);
+    if (a) joined += addToAlbum(a, c.ids);
+    else fresh.push(c.name);
+  }
+  if (joined) saveAlbums();
+  return fresh.length ? items : null;
+}
+
+let chooser = null;
+function openFolderChooser(items) {
+  const roots = folderRoots(items);
+  if (!roots.size) return;
+  chooser = { roots, modes: new Map(), unchecked: new Set() };
+  drawChooser();
+  $("folderChooser").hidden = false;
+}
+function drawChooser() {
+  const { roots, modes, unchecked } = chooser;
+  // A named top folder with folders inside: one album, or one per folder inside?
+  $("fcRoots").innerHTML = [...roots]
+    .filter(([root, r]) => !GENERIC.test(root) && r.children.size)
+    .map(([root, r]) => {
+      const mode = modes.get(root) || "one";
+      const kids = [...r.children.keys()];
+      return `<div class="fc-root"><p>"${esc(root)}" has folders inside it:</p><div class="seg">
+        <button data-root="${esc(root)}" data-mode="one" aria-pressed="${mode === "one"}">One album: ${esc(root)}</button>
+        <button data-root="${esc(root)}" data-mode="split" aria-pressed="${mode === "split"}">Separate: ${esc(kids.slice(0, 2).join(", "))}${kids.length > 2 ? "…" : ""}</button>
+      </div></div>`;
+    })
+    .join("");
+  const cands = folderCandidates(roots, modes);
+  chooser.cands = cands;
+  $("fcList").innerHTML = cands
+    .map((c, i) => {
+      const existing = folderAlbum(c.name);
+      const checked = !unchecked.has(c.name) && !(GENERIC.test(c.name) && !chooser.touched?.has(c.name));
+      return `<label><input type="checkbox" data-i="${i}" ${checked ? "checked" : ""}><span><strong>${esc(c.name)}</strong><small>${plural(c.ids.length, "photo")}${existing ? ", adds to your existing album" : ""}</small></span></label>`;
+    })
+    .join("");
+}
+$("fcRoots").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-root]");
+  if (!b) return;
+  chooser.modes.set(b.dataset.root, b.dataset.mode);
+  drawChooser();
+});
+$("fcList").addEventListener("change", (e) => {
+  const c = chooser.cands[Number(e.target.dataset.i)];
+  (chooser.touched ||= new Set()).add(c.name);
+  e.target.checked ? chooser.unchecked.delete(c.name) : chooser.unchecked.add(c.name);
+});
+$("fcSkip").onclick = () => ($("folderChooser").hidden = true);
+$("fcCreate").onclick = () => {
+  const picked = [...$("fcList").querySelectorAll("input:checked")].map((i) => chooser.cands[Number(i.dataset.i)]);
+  let made = 0, grew = 0;
+  for (const c of picked) {
+    const a = folderAlbum(c.name);
+    if (a) {
+      a.source ||= `folder:${c.name}`;
+      if (addToAlbum(a, c.ids)) grew++;
+    } else {
+      S.albums.push({ id: newId(), name: c.name.slice(0, 80), photos: [...new Set(c.ids)], created: Date.now(), source: `folder:${c.name}` });
+      made++;
+    }
+  }
+  $("folderChooser").hidden = true;
+  if (made || grew) {
+    saveAlbums();
+    toast([made && `Made ${plural(made, "album")}`, grew && `added photos to ${plural(grew, "album")}`].filter(Boolean).join(" and ") + ".");
+    if (S.view === "albums") render();
+  } else if (picked.length) toast(picked.length === 1 ? "That album already has these photos." : "Those albums already have these photos.");
+};
+
+// The scan: reads location and folder for photos already in the library.
+let scanCtrl = null;
+$("scanStop").onclick = () => scanCtrl?.abort();
+$("scanDone").onclick = () => {
+  $("scanModal").hidden = true;
+  if (pendingFolders?.length) openFolderChooser(pendingFolders);
+  pendingFolders = null;
+};
+for (const id of ["scanInput", "scanFilesInput"]) {
+  $(id).addEventListener("change", (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (files.length) runScan(files);
+  });
+}
+async function runScan(files) {
+  scanCtrl = new AbortController();
+  $("scanModal").hidden = false;
+  $("scanTitle").textContent = "Reading your photos";
+  $("scanText").textContent = "Getting started…";
+  $("scanStop").hidden = false;
+  $("scanDone").hidden = true;
+  $("scanBar").style.transform = "scaleX(0)";
+  $("scanNote").textContent = "Nothing is uploaded. The app only reads where each photo was taken and which folder it's in.";
+  let result;
+  try {
+    result = await scanFiles(files, {
+      signal: scanCtrl.signal,
+      onProgress: (done, total) => {
+        $("scanText").textContent = `${done.toLocaleString()} of ${plural(total, "photo")}`;
+        $("scanBar").style.transform = `scaleX(${total ? done / total : 1})`;
+      },
+    });
+  } catch (err) {
+    result = { found: [], total: 0, error: err.message };
+  }
+  const inLibrary = result.found.filter((f) => S.byId.has(f.id));
+  const notInLibrary = result.found.length - inLibrary.length;
+  let located = 0;
+  try {
+    located = await savePlaces(inLibrary);
+  } catch (err) {
+    showError(err);
+  }
+  pendingFolders = folderRoots(inLibrary).size ? inLibrary : null;
+  $("scanTitle").textContent = scanCtrl.signal.aborted ? "Scan stopped" : "Scan finished";
+  $("scanText").textContent = located
+    ? `Found where ${plural(located, "photo")} ${located === 1 ? "was" : "were"} taken.`
+    : inLibrary.length
+      ? "None of these photos had a location recorded."
+      : "None of these photos are in your library yet.";
+  $("scanNote").textContent = notInLibrary
+    ? `${plural(notInLibrary, "photo")} in this folder ${notInLibrary === 1 ? "isn't" : "aren't"} in your library, so ${notInLibrary === 1 ? "it was" : "they were"} skipped. Upload them to add them.`
+    : "";
+  $("scanBar").style.transform = "scaleX(1)";
+  $("scanStop").hidden = true;
+  $("scanDone").hidden = false;
+  $("scanDone").textContent = pendingFolders ? "Next: albums from folders" : "Done";
+  if (S.view === "albums" || S.view === "places") render();
+}

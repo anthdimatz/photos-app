@@ -139,6 +139,8 @@ function cleanAlbums(list) {
       name: String(a.name || "Untitled Album").trim().slice(0, 80) || "Untitled Album",
       photos: [...new Set((Array.isArray(a.photos) ? a.photos : []).filter((x) => ID_RE.test(x)))].slice(0, 20000),
       created: Number(a.created) || Date.now(),
+      // Albums made from a folder remember it, so later uploads from it join automatically.
+      ...(typeof a.source === "string" && a.source.startsWith("folder:") ? { source: a.source.slice(0, 120) } : {}),
     }));
 }
 const readAlbums = async (env) => cleanAlbums(await readJson(env, "meta/albums.json", []));
@@ -201,7 +203,13 @@ async function api(request, env, url) {
       await deleteForGood(env, expired);
       trash = await readTrash(env);
     }
-    let [favorites, albums, usage, changed] = await Promise.all([readFavorites(env), readAlbums(env), readUsage(env), readChanged(env)]);
+    let [favorites, albums, usage, changed, placesHead] = await Promise.all([
+      readFavorites(env),
+      readAlbums(env),
+      readUsage(env),
+      readChanged(env),
+      env.BUCKET.head("meta/places.json"),
+    ]);
     if (!changed) {
       // Libraries uploaded before this marker existed: start it now.
       changed = Date.now();
@@ -213,6 +221,7 @@ async function api(request, env, url) {
       albums,
       changed,
       usedBytes: usage ? usage.bytes : null,
+      placesAt: placesHead ? placesHead.uploaded.getTime() : 0,
       trashDays: TRASH_DAYS,
       limitBytes: limitBytes(env),
     });
@@ -226,6 +235,26 @@ async function api(request, env, url) {
     const kind = url.searchParams.get("kind") === "thumb" ? "thumb" : "full";
     const page = await listPage(env, `${kind}/`, url.searchParams.get("cursor"), part);
     return json({ photos: kind === "full" ? page.names : [], bytes: page.bytes, cursor: page.cursor });
+  }
+
+  // Where photos were taken: { "<photo id>": [latitude, longitude] }.
+  if (route === "places" && method === "GET") {
+    return json({ places: await readJson(env, "meta/places.json", {}) });
+  }
+  if (route === "places" && method === "POST") {
+    const { add } = await readBody(request);
+    if (!add || typeof add !== "object") return json({ error: "Expected locations to add." }, 400);
+    const places = await readJson(env, "meta/places.json", {});
+    let n = 0;
+    for (const [id, v] of Object.entries(add)) {
+      if (!ID_RE.test(id) || !Array.isArray(v) || v.length !== 2) continue;
+      const [lat, lon] = v.map(Number);
+      if (!(Math.abs(lat) <= 90 && Math.abs(lon) <= 180)) continue;
+      places[id] = [Math.round(lat * 1e4) / 1e4, Math.round(lon * 1e4) / 1e4];
+      n++;
+    }
+    await writeJson(env, "meta/places.json", places);
+    return json({ ok: true, added: n, total: Object.keys(places).length });
   }
 
   // The app reports the total it just measured while loading every page.
